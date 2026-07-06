@@ -1,0 +1,3 @@
+# demo replay config
+db_path: polyarb-demo.sqlite
+event_mappings_path: tests/fixtures/replay/mappings.yaml

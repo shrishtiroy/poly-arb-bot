@@ -1,0 +1,6 @@
+cross_venue:
+  - name: "demo: PM sports YES vs Kalshi sports NO"
+    category: sports
+    legs:
+      - {venue: polymarket, market_id: "pm-s", outcome_id: "pm-s-yes"}
+      - {venue: kalshi, market_id: "KXS", outcome_id: "KXS:no"}
