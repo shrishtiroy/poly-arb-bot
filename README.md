@@ -6,10 +6,7 @@ mispricings, paper-trades every one of them two ways at once (taker vs maker),
 and ends with an explicit **DEPLOY / NO-DEPLOY** verdict telling you whether a
 live bot is worth building — and on which venue.
 
-## Why this exists (read before dreaming of $50k/month)
-
-This project started from a viral "Polymarket arb blueprint" thread. The
-thread's *facts* are right and encoded here:
+## Why this exists
 
 - Taker fees follow `fee = shares × rate × p(1-p)`, peaking at 50¢ — the
   exact price region where arb gaps live. Polymarket rates by category
