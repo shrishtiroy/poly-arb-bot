@@ -47,6 +47,11 @@ class Market(BaseModel):
     # Non-null for multi-outcome (negative-risk style) groups: all markets in
     # the group share exactly one winning outcome.
     group_id: str | None = None
+    # Expected number of markets in this neg-risk group, as reported by the
+    # venue. None = venue did not expose it. Used to reject an INCOMPLETE multi
+    # partition: if discovery sliced the group (fewer members seen than this),
+    # the legs are not jointly exhaustive and their "gap" is a phantom.
+    group_size: int | None = None
     # Fee parameters as reported by the venue API at discovery time. None means
     # "venue did not expose it"; fees.FeeModel then falls back to the published
     # static schedule (with a logged warning).

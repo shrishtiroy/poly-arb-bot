@@ -111,6 +111,20 @@ def build_partitions(markets: list[Market], mappings: list[Partition]) -> list[P
     for (venue, group_id), members in groups.items():
         if len(members) < 3:  # a 2-market group adds nothing over BINARY
             continue
+        # Completeness check: a MULTI partition is only a valid arb if it holds
+        # EVERY outcome of the group (mutually exclusive AND jointly exhaustive).
+        # The venue reports the true group size; if we discovered fewer members
+        # (the discovery cap sliced the group), buying our legs does NOT
+        # guarantee $1 — the winner may be an outcome we don't hold. Skip it.
+        expected = next((m.group_size for m in members
+                         if m.group_size is not None), None)
+        if expected is not None and len(members) < expected:
+            log.warning(
+                "skipping incomplete neg-risk group %s: discovered %d of %d "
+                "outcomes (raise max_markets_per_venue to watch it)",
+                group_id, len(members), expected,
+            )
+            continue
         partitions.append(
             Partition(
                 kind=GapKind.MULTI,
@@ -189,6 +203,19 @@ class GapDetector:
                 fees_per_share += fee_model.taker_fee(1.0, avg_price)
         gross = 1.0 - total_cost / executable
         if gross < self.config.min_gross_edge:
+            return None
+        # Completeness guard: an implausibly large edge on a multi-outcome group
+        # means the partition is missing legs (the discovery cap sliced the
+        # neg-risk group), so it is not jointly exhaustive and the "$1 payout"
+        # guarantee is false. Drop it rather than book a phantom arb.
+        if (partition.kind is GapKind.MULTI
+                and gross > self.config.max_multi_gross_edge):
+            log.warning(
+                "dropping incomplete multi partition %s: gross edge %.3f > %.3f "
+                "(only %d legs seen — likely sliced by max_markets_per_venue)",
+                partition.key, gross, self.config.max_multi_gross_edge,
+                len(partition.legs),
+            )
             return None
         return GapEvent(
             kind=partition.kind,

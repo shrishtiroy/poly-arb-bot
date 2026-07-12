@@ -76,8 +76,14 @@ def normalize_fee_rate(raw: float | int | str | None) -> float | None:
     return value / 10_000.0 if value > 1.0 else value
 
 
-def parse_clob_market(raw: dict, category: Category) -> Market | None:
-    """Normalize one CLOB /markets entry. Returns None for non-tradable rows."""
+def parse_clob_market(raw: dict, category: Category,
+                      group_size: int | None = None) -> Market | None:
+    """Normalize one CLOB /markets entry. Returns None for non-tradable rows.
+
+    group_size, when known, is the true number of outcomes in this market's
+    neg-risk group (from Gamma /events); the gap detector uses it to reject
+    incomplete MULTI partitions.
+    """
     tokens = raw.get("tokens") or []
     if len(tokens) < 2 or not raw.get("condition_id"):
         return None
@@ -92,6 +98,7 @@ def parse_clob_market(raw: dict, category: Category) -> Market | None:
             if t.get("token_id")
         ],
         group_id=raw.get("neg_risk_market_id") or None,
+        group_size=group_size,
         taker_rate=normalize_fee_rate(raw.get("taker_base_fee")),
         maker_rate=normalize_fee_rate(raw.get("maker_base_fee")),
     )
@@ -152,6 +159,7 @@ class PolymarketAdapter(VenueAdapter):
     async def discover_markets(self) -> list[Market]:
         limit = self.config.max_markets_per_venue
         markets: list[Market] = []
+        group_sizes: dict[str, int] = {}  # event id → true # of group members
         async with httpx.AsyncClient(timeout=30) as client:
             # Gamma gives us active markets with category tags and volume order.
             resp = await client.get(
@@ -169,17 +177,41 @@ class PolymarketAdapter(VenueAdapter):
                 if not condition_id:
                     continue
                 category = map_category(row.get("category"))
+                # For neg-risk markets, look up the group's true member count so
+                # the detector can reject partitions sliced by the volume cap.
+                group_size = await self._group_size(client, row, group_sizes)
                 # CLOB market object carries token ids and live fee rates.
                 clob_resp = await client.get(f"{CLOB_BASE}/markets/{condition_id}")
                 if clob_resp.status_code != 200:
                     continue
-                market = parse_clob_market(clob_resp.json(), category)
+                market = parse_clob_market(clob_resp.json(), category, group_size)
                 if market is not None:
                     markets.append(market)
                 if len(markets) >= limit:
                     break
         log.info("polymarket: discovered %d markets", len(markets))
         return markets
+
+    async def _group_size(self, client: httpx.AsyncClient, gamma_row: dict,
+                          cache: dict[str, int]) -> int | None:
+        """True number of markets in this row's neg-risk group, via Gamma
+        /events (cached per event). None if the row isn't a neg-risk member."""
+        if not gamma_row.get("negRisk"):
+            return None
+        events = gamma_row.get("events") or []
+        event_id = str(events[0].get("id")) if events and events[0].get("id") else None
+        if not event_id:
+            return None
+        if event_id not in cache:
+            try:
+                resp = await client.get(f"{GAMMA_BASE}/events/{event_id}")
+                resp.raise_for_status()
+                cache[event_id] = len(resp.json().get("markets") or [])
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("polymarket: event %s size lookup failed: %s",
+                            event_id, exc)
+                cache[event_id] = 0  # unknown → treat as no constraint
+        return cache[event_id] or None
 
     async def stream_events(self, markets: list[Market]) -> AsyncIterator[FeedEvent]:
         asset_ids = [o.outcome_id for m in markets for o in m.outcomes]

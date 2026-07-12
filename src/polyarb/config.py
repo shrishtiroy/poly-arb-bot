@@ -27,6 +27,12 @@ class Config(BaseModel):
     target_notional: float = 500.0       # dollars we pretend to deploy per gap
     min_gross_edge: float = 0.005        # 0.5 cents/share before we even look
     min_executable_shares: float = 100.0  # below this a "gap" is thin-book noise
+    # A real arb edge is a cent or two. A huge "edge" on a MULTI group is the
+    # signature of an INCOMPLETE partition: the discovery cap
+    # (max_markets_per_venue) sliced a neg-risk group, so the legs we hold are
+    # not jointly exhaustive and buying them does NOT guarantee $1. Reject any
+    # multi gap whose gross edge exceeds this — it is a phantom, not money.
+    max_multi_gross_edge: float = 0.15
 
     # Paper trading
     bankroll_per_venue: float = 10_000.0
