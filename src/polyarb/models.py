@@ -199,7 +199,8 @@ class GapEvent(BaseModel):
 
 
 class Policy(str, Enum):
-    TAKER = "taker"
+    TAKER = "taker"              # naive: cross the spread on EVERY detected gap
+    TAKER_DISCIPLINED = "taker_disc"  # only cross when net edge (after fees) > 0
     MAKER = "maker"
 
 

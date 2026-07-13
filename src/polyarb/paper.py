@@ -74,6 +74,7 @@ class PaperEngine:
         self.markets = markets
         self.books = books  # shared with GapDetector (latest snapshots)
         self.taker_cash: dict[Venue, float] = {v: config.bankroll_per_venue for v in Venue}
+        self.taker_disc_cash: dict[Venue, float] = {v: config.bankroll_per_venue for v in Venue}
         self.maker_cash: dict[Venue, float] = {v: config.bankroll_per_venue for v in Venue}
         self.maker_attempts: dict[str, MakerAttempt] = {}  # gap_id →
         self.results: list[GapResult] = []
@@ -95,15 +96,28 @@ class PaperEngine:
     # ------------------------------------------------------------------ gaps
 
     def on_gap(self, gap: GapEvent) -> None:
-        self._attempt_taker(gap)
+        # Two taker policies on the SAME gap, so the report can contrast them:
+        #  TAKER            — naive: cross the spread on every detected gap.
+        #  TAKER_DISCIPLINED — only cross when net edge (after fees) > 0. This is
+        #                      what a real deployable bot would do; the gap
+        #                      between the two rows is the cost of no discipline.
+        self._attempt_taker(gap, Policy.TAKER)
+        self._attempt_taker(gap, Policy.TAKER_DISCIPLINED)
         self._attempt_maker(gap)
 
-    def _attempt_taker(self, gap: GapEvent) -> None:
+    def _attempt_taker(self, gap: GapEvent, policy: Policy) -> None:
+        # Disciplined taker skips gaps that don't clear fees — it never books a
+        # knowingly-negative trade, so its cash only sees profitable captures.
+        if (policy is Policy.TAKER_DISCIPLINED
+                and gap.net_taker_edge_per_share <= 0):
+            return
+        cash = (self.taker_cash if policy is Policy.TAKER
+                else self.taker_disc_cash)
         shares = gap.executable_shares
         cost = sum(leg.avg_price for leg in gap.legs) * shares
         primary = gap.legs[0].venue
-        if cost > self.taker_cash[primary]:
-            shares *= self.taker_cash[primary] / cost
+        if cost > cash[primary]:
+            shares *= cash[primary] / cost
         if shares < 1:
             return
         fees = 0.0
@@ -112,7 +126,7 @@ class PaperEngine:
             fee = model.taker_fee(shares, leg.avg_price)
             fees += fee
             self.fills.append(PaperFill(
-                order_id="taker", gap_id=gap.gap_id, policy=Policy.TAKER,
+                order_id=policy.value, gap_id=gap.gap_id, policy=policy,
                 venue=leg.venue, market_id=leg.market_id,
                 outcome_id=leg.outcome_id, category=gap.category,
                 price=leg.avg_price, size=shares, fee=fee, rebate_est=0.0,
@@ -120,9 +134,9 @@ class PaperEngine:
             ))
         gross = gap.gross_edge_per_share * shares
         net = gross - fees
-        self.taker_cash[primary] += net
+        cash[primary] += net
         self.results.append(GapResult(
-            gap_id=gap.gap_id, kind=gap.kind, policy=Policy.TAKER,
+            gap_id=gap.gap_id, kind=gap.kind, policy=policy,
             venue=primary, category=gap.category,
             outcome=GapOutcomeKind.CAPTURED, shares=shares,
             gross_pnl=gross, fees=fees, rebate_est=0.0, net_pnl=net,
