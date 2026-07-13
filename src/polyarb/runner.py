@@ -46,6 +46,9 @@ class Runner:
         self.engine = PaperEngine(config, market_index, self.detector.books)
         self._gap_open_ts: dict[str, float] = {}
         self.last_ts: float = 0.0
+        # Persist market metadata up front so the DB is self-describing
+        # (dashboards can resolve market_id/outcome_id to question/outcome names).
+        recorder.record_markets(markets)
 
     def process(self, event: FeedEvent) -> None:
         self.last_ts = max(self.last_ts, event.ts)

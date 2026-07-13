@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import GapEvent, GapResult, PaperFill
+from .models import GapEvent, GapResult, Market, PaperFill
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS gap_events (
@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS gap_lifetimes (
     partition_key TEXT NOT NULL,
     ts_open REAL NOT NULL,
     ts_close REAL NOT NULL
+);
+-- Human-readable reference for the opaque market_id/outcome_id in gaps & fills,
+-- so a dashboard can show "Will France win?" / "Yes" instead of hex token ids.
+CREATE TABLE IF NOT EXISTS markets (
+    venue TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    category TEXT NOT NULL,
+    outcomes TEXT NOT NULL,  -- json: {outcome_id: name}
+    PRIMARY KEY (venue, market_id)
 );
 CREATE TABLE IF NOT EXISTS results (
     gap_id TEXT NOT NULL,
@@ -64,6 +74,15 @@ class Recorder:
     def __init__(self, db_path: str | Path):
         self.conn = sqlite3.connect(str(db_path))
         self.conn.executescript(SCHEMA)
+
+    def record_markets(self, markets: list[Market]) -> None:
+        """Persist market metadata so gaps/fills can be shown human-readably."""
+        for m in markets:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO markets VALUES (?,?,?,?,?)",
+                (m.venue.value, m.market_id, m.question, m.category.value,
+                 json.dumps({o.outcome_id: o.name for o in m.outcomes})),
+            )
 
     def record_gap(self, gap: GapEvent) -> None:
         self.conn.execute(
