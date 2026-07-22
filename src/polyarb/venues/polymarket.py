@@ -1,7 +1,7 @@
 """Polymarket adapter.
 
 Discovery: Gamma API (category/tags) + CLOB REST (token ids, fee rates).
-Streaming: public CLOB websocket market channel — no auth needed for market
+Streaming: public CLOB websocket market channel - no auth needed for market
 data. Fee rates are read from the CLOB market object (`taker_base_fee` /
 `maker_base_fee`, reported in basis points) so a schedule change shows up
 without a code change.
@@ -13,6 +13,7 @@ phase 0 needs no keys and places no orders.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -76,13 +77,34 @@ def normalize_fee_rate(raw: float | int | str | None) -> float | None:
     return value / 10_000.0 if value > 1.0 else value
 
 
+def parse_end_ts(raw: str | None) -> float | None:
+    """Parse a Gamma ISO 8601 endDate (e.g. "2026-07-16T12:00:00Z") to a unix
+    timestamp. Returns None for missing or unparseable values."""
+    if not raw:
+        return None
+    try:
+        import datetime
+        text = raw.strip().replace("Z", "+00:00")
+        return datetime.datetime.fromisoformat(text).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_clob_market(raw: dict, category: Category,
-                      group_size: int | None = None) -> Market | None:
+                      group_size: int | None = None,
+                      slug: str | None = None,
+                      event_slug: str | None = None,
+                      end_ts: float | None = None) -> Market | None:
     """Normalize one CLOB /markets entry. Returns None for non-tradable rows.
 
     group_size, when known, is the true number of outcomes in this market's
     neg-risk group (from Gamma /events); the gap detector uses it to reject
     incomplete MULTI partitions.
+
+    slug and event_slug come from the Gamma row (not the CLOB object) and let
+    the dashboard link a gap back to its live market page. end_ts is the
+    market's expiry (unix seconds) from the Gamma endDate, needed for options
+    fair-value pricing.
     """
     tokens = raw.get("tokens") or []
     if len(tokens) < 2 or not raw.get("condition_id"):
@@ -99,6 +121,9 @@ def parse_clob_market(raw: dict, category: Category,
         ],
         group_id=raw.get("neg_risk_market_id") or None,
         group_size=group_size,
+        slug=slug,
+        event_slug=event_slug,
+        end_ts=end_ts,
         taker_rate=normalize_fee_rate(raw.get("taker_base_fee")),
         maker_rate=normalize_fee_rate(raw.get("maker_base_fee")),
     )
@@ -153,44 +178,163 @@ def apply_price_change(book: OrderBook, msg: dict) -> OrderBook:
     return book
 
 
+async def _get_with_retry(client: httpx.AsyncClient, url: str,
+                          params: dict | None = None, attempts: int = 4,
+                          backoff: float = 1.5) -> httpx.Response:
+    """GET with retries on transient transport errors.
+
+    Some networks intercept these hosts with a content filter that flaps on a
+    scale of seconds, so a single request can fail with an SSL/connect error
+    even though the endpoint is fine moments later. Discovery fires hundreds of
+    requests in a burst, so without per-request retries one blip aborts the
+    whole venue. Retry transport-level failures with exponential backoff; let
+    real HTTP status codes through to the caller unchanged.
+    """
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            return await client.get(url, params=params)
+        except (httpx.TransportError, httpx.HTTPError) as exc:
+            last_exc = exc
+            if i < attempts - 1:
+                await asyncio.sleep(backoff * (2 ** i))
+    raise last_exc  # exhausted retries
+
+
 class PolymarketAdapter(VenueAdapter):
     venue = Venue.POLYMARKET
 
     async def discover_markets(self) -> list[Market]:
-        limit = self.config.max_markets_per_venue
+        limit = self.config.cap_for(self.venue)
         markets: list[Market] = []
+        seen: set[str] = set()  # condition_ids already added
         group_sizes: dict[str, int] = {}  # event id → true # of group members
         async with httpx.AsyncClient(timeout=30) as client:
-            # Gamma gives us active markets with category tags and volume order.
-            resp = await client.get(
-                f"{GAMMA_BASE}/markets",
+            # Gamma caps each page at 100 rows regardless of `limit`, so page
+            # through with `offset` (volume-ordered) until we hit our cap.
+            offset = 0
+            while len(markets) < limit:
+                resp = await _get_with_retry(
+                    client, f"{GAMMA_BASE}/markets",
+                    params={
+                        "active": "true", "closed": "false",
+                        "order": "volume24hr", "ascending": "false",
+                        "limit": 100, "offset": offset,
+                    },
+                )
+                resp.raise_for_status()
+                gamma_rows = resp.json()
+                if not gamma_rows:
+                    break  # ran out of active markets before reaching the cap
+                offset += len(gamma_rows)
+                for row in gamma_rows:
+                    market = await self._row_to_market(client, row, group_sizes,
+                                                       seen)
+                    if market is not None:
+                        markets.append(market)
+                    if len(markets) >= limit:
+                        break
+            log.info("polymarket: discovered %d markets (volume-ranked)",
+                     len(markets))
+            # Ladder arb needs a DIVERSE set of threshold events, which the
+            # volume cap alone does not guarantee (low-volume rungs get sliced
+            # off, leaving one asset). Keep paging specifically for threshold
+            # markets until rungs span enough distinct events.
+            await self._scan_ladder_markets(client, markets, seen, group_sizes,
+                                             offset)
+        log.info("polymarket: discovered %d markets total", len(markets))
+        return markets
+
+    async def _row_to_market(self, client: httpx.AsyncClient, row: dict,
+                             group_sizes: dict[str, int],
+                             seen: set[str]) -> Market | None:
+        """Convert one Gamma row to a Market (fetching the CLOB object for token
+        ids + fees). Returns None for non-tradable, unfetchable, or duplicate
+        rows. Dedupes via `seen` so multiple discovery passes do not double-add."""
+        condition_id = row.get("conditionId")
+        if not condition_id or condition_id in seen:
+            return None
+        category = map_category(row.get("category"))
+        # For neg-risk markets, look up the group's true member count so the
+        # detector can reject partitions sliced by the cap.
+        group_size = await self._group_size(client, row, group_sizes)
+        # Slugs (from the Gamma row) let the dashboard link back to the live
+        # market page; the CLOB object does not carry them.
+        slug = row.get("slug") or None
+        events = row.get("events") or []
+        event_slug = events[0].get("slug") if events else None
+        # endDate (ISO 8601) drives time-to-expiry for fair value.
+        end_ts = parse_end_ts(row.get("endDate"))
+        # CLOB market object carries token ids and live fee rates. A single
+        # market that will not fetch (even after retries) is skipped, not fatal:
+        # one bad row must not sink discovery.
+        try:
+            clob_resp = await _get_with_retry(
+                client, f"{CLOB_BASE}/markets/{condition_id}")
+        except httpx.HTTPError:
+            return None
+        if clob_resp.status_code != 200:
+            return None
+        market = parse_clob_market(clob_resp.json(), category, group_size,
+                                   slug=slug, event_slug=event_slug,
+                                   end_ts=end_ts)
+        if market is not None:
+            seen.add(condition_id)
+        return market
+
+    async def _scan_ladder_markets(self, client: httpx.AsyncClient,
+                                   markets: list[Market], seen: set[str],
+                                   group_sizes: dict[str, int],
+                                   offset: int) -> None:
+        """Page further through Gamma, adding only threshold ("above/below/hit
+        $X") markets, until their rungs span `ladder_min_events` distinct events
+        (or the page budget runs out). This diversifies the ladder universe so
+        it is not dominated by whatever high-volume asset the main cap kept."""
+        from ..ladders import parse_threshold
+
+        def ladder_events() -> set[str]:
+            # Events that currently have >=2 threshold rungs of the same family:
+            # only those can actually form a ladder partition.
+            rungs: dict[tuple, int] = {}
+            for m in markets:
+                if not m.is_binary or not m.event_slug:
+                    continue
+                parsed = parse_threshold(m.question)
+                if parsed is None:
+                    continue
+                rungs[(m.event_slug, parsed[0])] = rungs.get(
+                    (m.event_slug, parsed[0]), 0) + 1
+            return {ev for (ev, _fam), n in rungs.items() if n >= 2}
+
+        target = self.config.ladder_min_events
+        added = 0
+        for _ in range(self.config.ladder_scan_max_pages):
+            if len(ladder_events()) >= target:
+                break
+            resp = await _get_with_retry(
+                client, f"{GAMMA_BASE}/markets",
                 params={
                     "active": "true", "closed": "false",
                     "order": "volume24hr", "ascending": "false",
-                    "limit": limit,
+                    "limit": 100, "offset": offset,
                 },
             )
             resp.raise_for_status()
             gamma_rows = resp.json()
+            if not gamma_rows:
+                break
+            offset += len(gamma_rows)
             for row in gamma_rows:
-                condition_id = row.get("conditionId")
-                if not condition_id:
+                # Cheap pre-filter on the Gamma question before spending a CLOB
+                # fetch: only threshold-parseable rows can be ladder rungs.
+                if parse_threshold(row.get("question", "")) is None:
                     continue
-                category = map_category(row.get("category"))
-                # For neg-risk markets, look up the group's true member count so
-                # the detector can reject partitions sliced by the volume cap.
-                group_size = await self._group_size(client, row, group_sizes)
-                # CLOB market object carries token ids and live fee rates.
-                clob_resp = await client.get(f"{CLOB_BASE}/markets/{condition_id}")
-                if clob_resp.status_code != 200:
-                    continue
-                market = parse_clob_market(clob_resp.json(), category, group_size)
+                market = await self._row_to_market(client, row, group_sizes, seen)
                 if market is not None:
                     markets.append(market)
-                if len(markets) >= limit:
-                    break
-        log.info("polymarket: discovered %d markets", len(markets))
-        return markets
+                    added += 1
+        log.info("polymarket: ladder scan added %d threshold markets across "
+                 "%d ladderable events", added, len(ladder_events()))
 
     async def _group_size(self, client: httpx.AsyncClient, gamma_row: dict,
                           cache: dict[str, int]) -> int | None:
@@ -204,7 +348,7 @@ class PolymarketAdapter(VenueAdapter):
             return None
         if event_id not in cache:
             try:
-                resp = await client.get(f"{GAMMA_BASE}/events/{event_id}")
+                resp = await _get_with_retry(client, f"{GAMMA_BASE}/events/{event_id}")
                 resp.raise_for_status()
                 cache[event_id] = len(resp.json().get("markets") or [])
             except (httpx.HTTPError, ValueError) as exc:
@@ -214,13 +358,39 @@ class PolymarketAdapter(VenueAdapter):
         return cache[event_id] or None
 
     async def stream_events(self, markets: list[Market]) -> AsyncIterator[FeedEvent]:
+        import asyncio
+
         asset_ids = [o.outcome_id for m in markets for o in m.outcomes]
         books: dict[str, OrderBook] = {}
         while True:  # reconnect loop
+            keepalive = None
             try:
-                async with websockets.connect(WS_URL) as ws:
+                # max_size=None: the initial book snapshot for hundreds of tokens
+                # exceeds the 1 MB default frame limit and would drop the socket
+                # (error 1009) on every connect. Prices are trusted venue data.
+                # ping_timeout=None: processing that large snapshot plus gap
+                # detection can block the event loop past the 20s pong deadline.
+                async with websockets.connect(
+                    WS_URL, max_size=None, ping_interval=20, ping_timeout=None
+                ) as ws:
                     await ws.send(json.dumps({"assets_ids": asset_ids, "type": "market"}))
-                    async for raw in ws:
+
+                    async def _keepalive():
+                        # Polymarket drops idle sockets ("no close frame") unless
+                        # the client sends an application-level PING periodically.
+                        while True:
+                            await asyncio.sleep(10)
+                            await ws.send("PING")
+
+                    keepalive = asyncio.create_task(_keepalive())
+                    while True:
+                        # Staleness watchdog: a silent-but-open socket (TCP alive,
+                        # no data) would block `async for` forever, stalling gap
+                        # detection with no error. If nothing arrives within the
+                        # timeout, drop and reconnect.
+                        raw = await asyncio.wait_for(ws.recv(), timeout=45)
+                        if raw == "PONG":
+                            continue
                         for msg in _as_list(json.loads(raw)):
                             event_type = msg.get("event_type")
                             if event_type == "book":
@@ -234,11 +404,14 @@ class PolymarketAdapter(VenueAdapter):
                                     yield BookEvent(ts=book.ts, book=book.model_copy(deep=True))
                             elif event_type == "last_trade_price":
                                 yield parse_ws_trade(msg)
+            except asyncio.TimeoutError:
+                log.warning("polymarket ws stalled (no data for 45s); reconnecting")
             except (websockets.WebSocketException, OSError) as exc:
                 log.warning("polymarket ws dropped (%s); reconnecting in 3s", exc)
-                import asyncio
-
-                await asyncio.sleep(3)
+            finally:
+                if keepalive is not None:
+                    keepalive.cancel()
+            await asyncio.sleep(3)  # backoff before reconnecting
 
 
 def _as_list(payload) -> list[dict]:

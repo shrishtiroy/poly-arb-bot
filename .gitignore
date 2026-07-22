@@ -6,6 +6,8 @@ dist/
 .pytest_cache/
 *.sqlite
 *.sqlite-journal
+# Exception: the committed read-only snapshot the Vercel dashboard serves.
+!data/live.sqlite
 .venv/
 venv/
 .env

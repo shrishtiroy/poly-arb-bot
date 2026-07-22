@@ -8,6 +8,7 @@ the replay-mode tests meaningful.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -24,6 +25,7 @@ from .models import (
 )
 from .paper import PaperEngine
 from .recorder import Recorder
+from .strategy_b import StrategyB
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +46,11 @@ class Runner:
         self.detector = GapDetector(config=config, markets=market_index,
                                     partitions=partitions)
         self.engine = PaperEngine(config, market_index, self.detector.books)
+        # Strategy B: passive Black-Scholes fair-value measurement alongside the
+        # arb accounting. Its spot/vol cache is warmed by a background task in
+        # run_live; process() just reads it synchronously per book update.
+        self.strategy_b = (StrategyB(config, market_index, recorder)
+                           if config.strategy_b_enabled else None)
         self._gap_open_ts: dict[str, float] = {}
         self.last_ts: float = 0.0
         # Persist market metadata up front so the DB is self-describing
@@ -55,6 +62,8 @@ class Runner:
         if isinstance(event, BookEvent):
             opened, closed = self.detector.on_book(event.book)
             self.engine.on_book(event.book, event.ts)
+            if self.strategy_b is not None:
+                self.strategy_b.on_book(event.book, event.ts)
             for partition_key, gap_id, ts_close in closed:
                 self.engine.on_gap_closed(gap_id, ts_close)
                 self.recorder.record_gap_close(
@@ -159,7 +168,7 @@ async def run_live(config: Config, hours: float, recorder: Recorder) -> Runner:
 
     if not markets:
         raise RuntimeError(
-            "no venue reachable — if you are inside a sandboxed/proxied "
+            "no venue reachable - if you are inside a sandboxed/proxied "
             "environment, run live collection from a machine with direct "
             "internet access (see README), or use --replay."
         )
@@ -172,7 +181,24 @@ async def run_live(config: Config, hours: float, recorder: Recorder) -> Runner:
         async for event in adapter.stream_events(adapter_markets):
             await queue.put(event)
 
+    async def refresh_strategy_b(sb):
+        # Warm the spot/vol cache before the hot path reads it, then refresh
+        # spot often and realized vol occasionally. Spot and vol have different
+        # cadences, so track each independently.
+        await sb.prime()
+        await sb.refresh_vol()
+        await sb.refresh_spot()
+        last_vol = time.time()
+        while True:
+            await asyncio.sleep(config.bs_refresh_spot_s)
+            await sb.refresh_spot()
+            if time.time() - last_vol > config.bs_refresh_vol_s:
+                await sb.refresh_vol()
+                last_vol = time.time()
+
     tasks = [asyncio.create_task(pump(a, m)) for a, m in live_adapters]
+    if runner.strategy_b is not None:
+        tasks.append(asyncio.create_task(refresh_strategy_b(runner.strategy_b)))
     deadline = time.time() + hours * 3600
     last_commit = time.time()
     try:
@@ -181,10 +207,16 @@ async def run_live(config: Config, hours: float, recorder: Recorder) -> Runner:
                 event = await asyncio.wait_for(queue.get(), timeout=5.0)
             except asyncio.TimeoutError:
                 continue
-            runner.process(event)
-            if time.time() - last_commit > 10:
-                recorder.commit()
-                last_commit = time.time()
+            # A transient SQLite write failure (e.g. a lock that outlasts the
+            # busy_timeout) must not tear down a long-running collection: log it
+            # and keep going rather than losing hours of data mid-run.
+            try:
+                runner.process(event)
+                if time.time() - last_commit > 10:
+                    recorder.commit()
+                    last_commit = time.time()
+            except sqlite3.OperationalError as exc:
+                log.warning("recorder write failed, continuing: %s", exc)
     finally:
         for task in tasks:
             task.cancel()

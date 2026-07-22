@@ -21,7 +21,7 @@ from .models import Venue
 JURISDICTION_NOTES = {
     Venue.NOVIG.value: (
         "Novig operates under a sweepstakes model with state-by-state "
-        "availability — confirm your state is eligible before funding."
+        "availability - confirm your state is eligible before funding."
     ),
     Venue.POLYMARKET.value: (
         "US users trade via Polymarket US; confirm your account type matches "
@@ -36,7 +36,7 @@ class Cell:
     venue: str
     category: str
     policy: str
-    kind: str  # binary / multi / cross_venue — kept separate so a
+    kind: str  # binary / multi / cross_venue - kept separate so a
                # venue-vs-venue strategy never inflates a single-venue row
     n_attempts: int = 0
     n_captured: int = 0
@@ -119,7 +119,7 @@ def render_report(db_path: str | Path) -> str:
     cells, gap_stats = load_cells(db_path)
     lines = []
     lines.append("=" * 100)
-    lines.append("POLYARB — cross-venue paper-trading comparison")
+    lines.append("POLYARB - cross-venue paper-trading comparison")
     lines.append("=" * 100)
     lines.append("")
     lines.append("Gap population:")
@@ -151,7 +151,7 @@ def render_report(db_path: str | Path) -> str:
             f"{cell.days_covered:>6.0f}"
         )
     if not cells:
-        lines.append("  (no attempts recorded — run `polyarb collect` first)")
+        lines.append("  (no attempts recorded - run `polyarb collect` first)")
     lines.append("")
     lines.append("Notes: taker rows assume perfectly simultaneous fills (optimistic).")
     lines.append("       maker 'net+reb$' uses an UPPER-BOUND rebate estimate.")
@@ -177,10 +177,10 @@ def decide(db_path: str | Path, config: Config) -> str:
         elif (criteria.require_positive_without_best_day
               and cell.pnl_without_best_day <= 0):
             why = (f"edge vanishes without best day "
-                   f"(${cell.pnl_without_best_day:.2f}) — looks like a fluke")
+                   f"(${cell.pnl_without_best_day:.2f}) - looks like a fluke")
         if why is None:
             note = (
-                "cross-venue strategy — confirm jurisdiction on every leg venue"
+                "cross-venue strategy - confirm jurisdiction on every leg venue"
                 if cell.kind == "cross_venue"
                 else JURISDICTION_NOTES.get(cell.venue, "")
             )
@@ -190,7 +190,7 @@ def decide(db_path: str | Path, config: Config) -> str:
             reasons[key] = why
 
     lines.append("=" * 100)
-    lines.append("POLYARB — deploy decision")
+    lines.append("POLYARB - deploy decision")
     lines.append("=" * 100)
     if deployables:
         best, note = deployables[0]
@@ -212,7 +212,7 @@ def decide(db_path: str | Path, config: Config) -> str:
         for key, why in list(reasons.items())[:12]:
             lines.append(f"    {key:<40} {why}")
         if not cells:
-            lines.append("    (no data at all — run `polyarb collect` first)")
+            lines.append("    (no data at all - run `polyarb collect` first)")
     lines.append("")
     lines.append("Criteria: "
                  f">={criteria.min_days_of_data:.0f} days, "

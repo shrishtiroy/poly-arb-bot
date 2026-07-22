@@ -4,7 +4,7 @@ Every fee-bearing venue currently uses the same bell curve:
 
     fee = shares * rate * p * (1 - p)
 
-which peaks at p = 0.50 — exactly where arb gaps cluster. Rates are taken from
+which peaks at p = 0.50 - exactly where arb gaps cluster. Rates are taken from
 the venue API at discovery time whenever exposed (Market.taker_rate /
 Market.maker_rate); the static tables below are *fallbacks* mirroring the
 published schedules as of 2026-07 and log a warning when used, because all
@@ -86,7 +86,7 @@ def fee_model_for(market: Market) -> FeeModel:
             taker = POLYMARKET_TAKER_RATES.get(market.category, 0.05)
             log.warning(
                 "polymarket market %s did not expose taker_rate; using static "
-                "fallback %.3f for category %s — verify against the live fee schedule",
+                "fallback %.3f for category %s - verify against the live fee schedule",
                 market.market_id, taker, market.category.value,
             )
         maker = market.maker_rate if market.maker_rate is not None else 0.0
@@ -102,7 +102,7 @@ def fee_model_for(market: Market) -> FeeModel:
             taker = KALSHI_TAKER_RATE
             log.warning(
                 "kalshi market %s did not expose taker_rate; using static "
-                "fallback %.3f — verify against kalshi.com/fee-schedule",
+                "fallback %.3f - verify against kalshi.com/fee-schedule",
                 market.market_id, taker,
             )
         maker = (

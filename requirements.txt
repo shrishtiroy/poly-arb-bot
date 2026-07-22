@@ -1,0 +1,6 @@
+# Runtime deps for the Vercel dashboard function only (not the collector).
+# The dashboard imports polyarb.dashboard, which pulls in models/config; those
+# use pydantic + pyyaml. The collector's httpx/websockets/typer are not needed
+# to SERVE pages, so they are omitted to keep the serverless bundle small.
+pydantic>=2.7
+pyyaml>=6.0

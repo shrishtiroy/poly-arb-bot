@@ -2,7 +2,7 @@
 
 Auth: OAuth 2.0 client-credentials against the developer API described at
 docs.novig.com. Credentials come from env (NOVIG_CLIENT_ID / NOVIG_CLIENT_SECRET)
-and are used for read-only market data only — this adapter, like the others,
+and are used for read-only market data only - this adapter, like the others,
 has no order-placement path.
 
 ENDPOINT CAVEAT: docs.novig.com is unreachable from the build sandbox (egress

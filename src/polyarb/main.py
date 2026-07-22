@@ -90,5 +90,18 @@ def decide(
     typer.echo(decide_fn(db or cfg.db_path, cfg))
 
 
+@app.command()
+def dashboard(
+    db: Optional[Path] = typer.Option(None, help="SQLite path."),
+    config: Optional[Path] = typer.Option(None, help="YAML config override."),
+    port: int = typer.Option(8787, help="Port to serve on."),
+):
+    """Serve the local web dashboard (Live gaps + How it works)."""
+    cfg = _load(config)
+    from .dashboard import serve
+
+    serve(str(db or cfg.db_path), port)
+
+
 if __name__ == "__main__":
     app()
