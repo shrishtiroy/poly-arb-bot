@@ -3,7 +3,7 @@
 Market data (markets list, orderbook, trades) is served by the public Trade
 API v2 REST endpoints without authentication, so live collection needs no
 credentials; we poll books at config.kalshi_poll_interval_s. (The websocket
-feed requires an RSA API key — a free upgrade path left for a later phase.)
+feed requires an RSA API key - a free upgrade path left for a later phase.)
 
 Units: Kalshi prices are integer cents (1..99). The orderbook response lists
 resting YES-buy and NO-buy orders; the YES ask side is the mirror of NO bids
@@ -71,6 +71,9 @@ def parse_market(raw: dict) -> Market | None:
             Outcome(outcome_id=f"{ticker}:{NO}", name="No"),
         ],
         group_id=raw.get("event_ticker") or None,
+        # Kalshi market pages live at kalshi.com/markets/<event ticker>; store
+        # the lowercased ticker so the dashboard can build that link.
+        slug=(raw.get("event_ticker") or "").lower() or None,
         # v2 market objects don't expose the fee rate; fees.py falls back to
         # the published 0.07 schedule with a warning.
         taker_rate=None,
@@ -138,18 +141,36 @@ def _parse_ts(value) -> float:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
 
 
+async def _get_with_retry(client: httpx.AsyncClient, url: str,
+                          params: dict | None = None, attempts: int = 4,
+                          backoff: float = 1.5) -> httpx.Response:
+    """GET with retries on transient transport errors (SSL/connect blips from a
+    flapping network content filter). Real HTTP status codes pass through."""
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            return await client.get(url, params=params)
+        except (httpx.TransportError, httpx.HTTPError) as exc:
+            last_exc = exc
+            if i < attempts - 1:
+                await asyncio.sleep(backoff * (2 ** i))
+    raise last_exc
+
+
 class KalshiAdapter(VenueAdapter):
     venue = Venue.KALSHI
 
     async def discover_markets(self) -> list[Market]:
+        cap = self.config.cap_for(self.venue)
         markets: list[Market] = []
         cursor = None
         async with httpx.AsyncClient(timeout=30) as client:
-            while len(markets) < self.config.max_markets_per_venue:
+            while len(markets) < cap:
                 params = {"status": "open", "limit": 100}
                 if cursor:
                     params["cursor"] = cursor
-                resp = await client.get(f"{API_BASE}/markets", params=params)
+                resp = await _get_with_retry(client, f"{API_BASE}/markets",
+                                             params=params)
                 resp.raise_for_status()
                 payload = resp.json()
                 for raw in payload.get("markets", []):
@@ -159,7 +180,7 @@ class KalshiAdapter(VenueAdapter):
                 cursor = payload.get("cursor")
                 if not cursor:
                     break
-        markets = markets[: self.config.max_markets_per_venue]
+        markets = markets[:cap]
         log.info("kalshi: discovered %d markets", len(markets))
         return markets
 

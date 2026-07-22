@@ -1,6 +1,6 @@
 """Gap detection.
 
-All three arb shapes reduce to one test: a *partition* — a set of legs whose
+All three arb shapes reduce to one test: a *partition* - a set of legs whose
 outcomes are mutually exclusive and jointly exhaustive, so holding one share of
 each pays exactly $1 at resolution. If the depth-weighted cost of buying every
 leg is under $1, the difference is the gross edge.
@@ -90,6 +90,13 @@ def yes_outcome_id(market: Market) -> str:
     return market.outcomes[0].outcome_id
 
 
+def no_outcome_id(market: Market) -> str:
+    for outcome in market.outcomes:
+        if outcome.name.strip().lower() == "no":
+            return outcome.outcome_id
+    return market.outcomes[-1].outcome_id
+
+
 def build_partitions(markets: list[Market], mappings: list[Partition]) -> list[Partition]:
     partitions: list[Partition] = list(mappings)
     groups: dict[tuple[Venue, str], list[Market]] = {}
@@ -111,6 +118,20 @@ def build_partitions(markets: list[Market], mappings: list[Partition]) -> list[P
     for (venue, group_id), members in groups.items():
         if len(members) < 3:  # a 2-market group adds nothing over BINARY
             continue
+        # Completeness check: a MULTI partition is only a valid arb if it holds
+        # EVERY outcome of the group (mutually exclusive AND jointly exhaustive).
+        # The venue reports the true group size; if we discovered fewer members
+        # (the discovery cap sliced the group), buying our legs does NOT
+        # guarantee $1 - the winner may be an outcome we don't hold. Skip it.
+        expected = next((m.group_size for m in members
+                         if m.group_size is not None), None)
+        if expected is not None and len(members) < expected:
+            log.warning(
+                "skipping incomplete neg-risk group %s: discovered %d of %d "
+                "outcomes (raise max_markets_per_venue to watch it)",
+                group_id, len(members), expected,
+            )
+            continue
         partitions.append(
             Partition(
                 kind=GapKind.MULTI,
@@ -119,6 +140,9 @@ def build_partitions(markets: list[Market], mappings: list[Partition]) -> list[P
                 legs=[(m.venue, m.market_id, yes_outcome_id(m)) for m in members],
             )
         )
+    # Strategy A: monotonicity arbs across same-event threshold ladders.
+    from .ladders import build_ladder_partitions
+    partitions.extend(build_ladder_partitions(markets))
     return partitions
 
 
@@ -181,7 +205,9 @@ class GapDetector:
                 return None
             avg_price = cost / executable
             legs.append(GapLeg(venue=venue, market_id=market_id,
-                               outcome_id=outcome_id, avg_price=avg_price))
+                               outcome_id=outcome_id, avg_price=avg_price,
+                               shares=executable,
+                               levels=book.levels_to_buy(executable)))
             total_cost += cost
             market = self.markets.get((venue, market_id))
             if market is not None:
@@ -189,6 +215,19 @@ class GapDetector:
                 fees_per_share += fee_model.taker_fee(1.0, avg_price)
         gross = 1.0 - total_cost / executable
         if gross < self.config.min_gross_edge:
+            return None
+        # Completeness guard: an implausibly large edge on a multi-outcome group
+        # means the partition is missing legs (the discovery cap sliced the
+        # neg-risk group), so it is not jointly exhaustive and the "$1 payout"
+        # guarantee is false. Drop it rather than book a phantom arb.
+        if (partition.kind is GapKind.MULTI
+                and gross > self.config.max_multi_gross_edge):
+            log.warning(
+                "dropping incomplete multi partition %s: gross edge %.3f > %.3f "
+                "(only %d legs seen - likely sliced by max_markets_per_venue)",
+                partition.key, gross, self.config.max_multi_gross_edge,
+                len(partition.legs),
+            )
             return None
         return GapEvent(
             kind=partition.kind,

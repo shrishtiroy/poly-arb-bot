@@ -47,6 +47,19 @@ class Market(BaseModel):
     # Non-null for multi-outcome (negative-risk style) groups: all markets in
     # the group share exactly one winning outcome.
     group_id: str | None = None
+    # Expected number of markets in this neg-risk group, as reported by the
+    # venue. None = venue did not expose it. Used to reject an INCOMPLETE multi
+    # partition: if discovery sliced the group (fewer members seen than this),
+    # the legs are not jointly exhaustive and their "gap" is a phantom.
+    group_size: int | None = None
+    # URL slugs for linking back to the live market page. Polymarket exposes a
+    # per-market `slug` and (for grouped markets) an `event_slug`; Kalshi links
+    # are built from the event ticker so `slug` there is the lowercased ticker.
+    slug: str | None = None
+    event_slug: str | None = None
+    # Market expiry as a unix timestamp (seconds), when the venue exposes it.
+    # Needed for time-to-expiry T in options fair-value pricing (Strategy B).
+    end_ts: float | None = None
     # Fee parameters as reported by the venue API at discovery time. None means
     # "venue did not expose it"; fees.FeeModel then falls back to the published
     # static schedule (with a logged warning).
@@ -99,6 +112,24 @@ class OrderBook(BaseModel):
             if remaining <= 1e-9:
                 break
         return shares - remaining, cost
+
+    def levels_to_buy(self, shares: float) -> list[tuple[float, float]]:
+        """The (price, size) ask levels consumed to fill `shares`, in book order.
+
+        The last level's size is clipped to whatever is actually taken there, so
+        summing the sizes returns min(shares, available depth). Used to show the
+        depth walk (each price tier we cross past the surface quote)."""
+        remaining = shares
+        walked: list[tuple[float, float]] = []
+        for level in self.asks:
+            take = min(remaining, level.size)
+            if take <= 0:
+                break
+            walked.append((level.price, take))
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        return walked
 
     def proceeds_to_sell(self, shares: float) -> tuple[float, float]:
         """Walk the bid side for `shares`. Returns (filled_shares, dollar_proceeds)."""
@@ -167,6 +198,7 @@ class GapKind(str, Enum):
     BINARY = "binary"          # YES ask + NO ask < 1 on one venue
     MULTI = "multi"            # sum of YES asks across a group < 1
     CROSS_VENUE = "cross_venue"  # YES on venue A + NO on venue B < 1
+    LADDER = "ladder"          # monotonicity break across threshold rungs
 
 
 class GapLeg(BaseModel):
@@ -174,6 +206,10 @@ class GapLeg(BaseModel):
     market_id: str
     outcome_id: str
     avg_price: float  # depth-weighted for executable_shares
+    shares: float = 0.0  # shares bought on this leg (== gap executable_shares)
+    # The ask levels walked to fill `shares`: [(price, size), ...]. One entry
+    # means the surface quote had enough depth; multiple means we walked deeper.
+    levels: list[tuple[float, float]] = Field(default_factory=list)
 
 
 class GapEvent(BaseModel):
@@ -194,7 +230,8 @@ class GapEvent(BaseModel):
 
 
 class Policy(str, Enum):
-    TAKER = "taker"
+    TAKER = "taker"              # naive: cross the spread on EVERY detected gap
+    TAKER_DISCIPLINED = "taker_disc"  # only cross when net edge (after fees) > 0
     MAKER = "maker"
 
 
@@ -257,6 +294,9 @@ class GapResult(BaseModel):
     net_pnl: float        # gross - fees (rebate reported separately)
     ts_open: float
     ts_close: float
+    # Policy-specific extras for display. For MAKER this holds the resting limit
+    # price per leg, keyed by outcome_id: {outcome_id: limit_price}.
+    detail: dict[str, float] | None = None
 
     @property
     def lifetime_s(self) -> float:
