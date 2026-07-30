@@ -23,6 +23,12 @@ app = typer.Typer(add_completion=False, help=__doc__)
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+# httpx logs one INFO line per request; a 24h collect issues millions of them
+# and grew the unrotated logs to 345MB. Our own logs stay at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+
 
 def _load(config_path: Optional[Path]) -> Config:
     return Config.load(config_path)
