@@ -17,6 +17,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 # Make the src/ layout importable when Vercel runs this file from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -42,15 +43,32 @@ ROUTES = {
 }
 
 
+def resolve_path(raw: str) -> str:
+    """Recover the user-facing path from the URL the function actually receives.
+
+    vercel.json rewrites every request to /api/index, so self.path is the
+    rewritten target, not what the browser asked for - which made every route
+    404. The rewrite forwards the original path in a __path query param; fall
+    back to the literal path (and treat the bare function URL as "/") so this
+    works under `vercel dev` and direct /api/index hits too.
+    """
+    parsed = urlparse(raw)
+    forwarded = parse_qs(parsed.query).get("__path", [""])[0]
+    path = forwarded or parsed.path
+    if path in ("", "/api/index", "/api/index.py"):
+        return "/"
+    return path.rstrip("/") or "/"
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Strip any query string; match only the path.
-        path = self.path.split("?", 1)[0]
+        path = resolve_path(self.path)
         renderer = ROUTES.get(path)
         if renderer is None:
             self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"404 Not Found")
+            self.wfile.write(f"404 Not Found: {path}".encode())
             return
         try:
             html = renderer(DB).encode()
