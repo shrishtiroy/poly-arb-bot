@@ -622,7 +622,8 @@ def render_fairvalue(db):
           f'</div>')
 
     def frow(r):
-        tm = datetime.datetime.fromtimestamp(r["ts"]).strftime("%b %-d %-I:%M%p").lower()
+        # Same MM-DD HH:MM:SS format the arb tables use (see gap_table).
+        tm = datetime.datetime.fromtimestamp(r["ts"]).strftime("%m-%d %H:%M:%S")
         div = r["divergence"]
         dcls = "pos" if div >= 0 else "neg"
         rel = "above" if r["family"] == "up" else "below"
