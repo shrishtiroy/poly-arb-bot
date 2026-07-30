@@ -103,7 +103,12 @@ class PaperEngine:
         #                      between the two rows is the cost of no discipline.
         self._attempt_taker(gap, Policy.TAKER)
         self._attempt_taker(gap, Policy.TAKER_DISCIPLINED)
-        self._attempt_maker(gap)
+        # MAKER is disabled by default (config.enable_maker): it never completed
+        # a two-leg arb in 1,296 live attempts and only ever lost money to
+        # leg risk. Nothing else in the maker path runs when no attempt is
+        # registered, so the TTL/fill/leg-risk sweeps below simply no-op.
+        if self.config.enable_maker:
+            self._attempt_maker(gap)
 
     def _attempt_taker(self, gap: GapEvent, policy: Policy) -> None:
         # Disciplined taker skips gaps that don't clear fees - it never books a

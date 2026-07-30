@@ -17,6 +17,9 @@ def replay_db(tmp_path_factory):
     config = Config(
         db_path=str(db_path),
         event_mappings_path=str(tmp / "mappings.yaml"),
+        # These tests measure the maker-vs-taker fee asymmetry, so they need the
+        # maker policy on even though live collection now ships it disabled.
+        enable_maker=True,
     )
     recorder = Recorder(db_path)
     runner = run_replay(config, tmp / "demo.jsonl", recorder)

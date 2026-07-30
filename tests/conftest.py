@@ -40,4 +40,8 @@ def config() -> Config:
         min_gross_edge=0.005,
         min_executable_shares=100.0,
         maker_order_ttl_s=120.0,
+        # Maker ships disabled (it never completed an arb live), but the engine
+        # is still exercised here so the FIFO/leg-risk model stays covered for
+        # anyone who re-enables it to re-measure.
+        enable_maker=True,
     )

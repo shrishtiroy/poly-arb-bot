@@ -38,6 +38,11 @@ class Config(BaseModel):
     bankroll_per_venue: float = 10_000.0
     maker_order_ttl_s: float = 120.0     # cancel resting legs after this
     maker_price_improve_tick: float = 0.01
+    # Maker is OFF by default: across 1,296 live attempts it completed zero
+    # two-leg arbs (1,271 expired unfilled, 25 filled one leg and were
+    # liquidated as leg_risk for -$477). It is pure downside on this data, so
+    # the harness no longer rests orders. Set true to re-measure it.
+    enable_maker: bool = False
 
     # Storage
     db_path: str = "polyarb.sqlite"
