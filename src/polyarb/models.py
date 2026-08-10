@@ -276,6 +276,7 @@ class GapOutcomeKind(str, Enum):
     LEG_RISK = "leg_risk"        # partial legs filled, liquidated at market
     UNFILLED = "unfilled"        # no leg filled before expiry/close
     THIN = "thin"                # detected but below min executable depth
+    MISSED = "missed"            # edge closed / book moved during simulated latency
 
 
 class GapResult(BaseModel):

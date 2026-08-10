@@ -53,6 +53,54 @@ def test_taker_capture_books_immediately(config):
     assert result.net_pnl == pytest.approx(400 * 0.03 - expected_fees)
 
 
+def test_taker_disciplined_waits_out_latency_then_reprices(config):
+    _, det, engine = build(config)
+    gap = open_gap(det, engine)  # ts=1000, exec queued for ts=1000+latency
+    assert len(engine.pending_taker_disc) == 1
+    assert not any(r.policy == Policy.TAKER_DISCIPLINED for r in engine.results)
+
+    # A later tick past the latency window, book unchanged: fills at the same
+    # prices detection saw, so it should match the TAKER row exactly.
+    tick = make_book(Venue.POLYMARKET, "m1", "yes1",
+                     [(0.46, 500)], [(0.48, 400)], ts=1001.0)
+    det.on_book(tick)
+    engine.on_book(tick, 1001.0)
+
+    taker = [r for r in engine.results if r.policy == Policy.TAKER][0]
+    disc = [r for r in engine.results if r.policy == Policy.TAKER_DISCIPLINED]
+    assert len(disc) == 1
+    assert disc[0].outcome == GapOutcomeKind.CAPTURED
+    assert disc[0].net_pnl == pytest.approx(taker.net_pnl)
+    assert not engine.pending_taker_disc
+
+
+def test_taker_disciplined_misses_when_price_moves_during_latency(config):
+    _, det, engine = build(config)
+    gap = open_gap(det, engine)  # ts=1000
+    assert len(engine.pending_taker_disc) == 1
+
+    # Price moves against us inside the latency window - this update lands
+    # before ts_exec so the sweep does not fire on it yet.
+    worse = make_book(Venue.POLYMARKET, "m1", "yes1",
+                      [(0.46, 500)], [(0.60, 400)], ts=1000.1)
+    det.on_book(worse)
+    engine.on_book(worse, 1000.1)
+    assert not any(r.policy == Policy.TAKER_DISCIPLINED for r in engine.results)
+
+    # Next tick lands past the latency window and executes against the book
+    # as it now stands (still bad) rather than the stale detection price.
+    tick = make_book(Venue.POLYMARKET, "m1", "yes1",
+                     [(0.46, 500)], [(0.60, 400)], ts=1001.0)
+    det.on_book(tick)
+    engine.on_book(tick, 1001.0)
+
+    disc = [r for r in engine.results if r.policy == Policy.TAKER_DISCIPLINED]
+    assert len(disc) == 1
+    assert disc[0].outcome == GapOutcomeKind.MISSED
+    assert disc[0].net_pnl == 0.0
+    assert not engine.pending_taker_disc
+
+
 def test_maker_rests_and_fills_via_prints(config):
     _, det, engine = build(config)
     gap = open_gap(det, engine)

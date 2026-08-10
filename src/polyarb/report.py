@@ -42,6 +42,7 @@ class Cell:
     n_captured: int = 0
     n_leg_risk: int = 0
     n_unfilled: int = 0
+    n_missed: int = 0  # TAKER_DISCIPLINED only: edge closed during simulated latency
     gross_pnl: float = 0.0
     fees: float = 0.0
     rebate_est: float = 0.0
@@ -87,6 +88,8 @@ def load_cells(db_path: str | Path) -> tuple[list[Cell], dict]:
             cell.n_leg_risk += 1
         elif row["outcome"] == "unfilled":
             cell.n_unfilled += 1
+        elif row["outcome"] == "missed":
+            cell.n_missed += 1
         cell.gross_pnl += row["gross_pnl"]
         cell.fees += row["fees"]
         cell.rebate_est += row["rebate_est"]
@@ -136,7 +139,7 @@ def render_report(db_path: str | Path) -> str:
     header = (
         f"{'venue':<11}{'category':<10}{'strategy':<12}{'policy':<7}"
         f"{'tries':>6}{'capt':>6}"
-        f"{'legrisk':>8}{'fill%':>7}{'gross$':>10}{'fees$':>9}{'net$':>10}"
+        f"{'legrisk':>8}{'missed':>7}{'fill%':>7}{'gross$':>10}{'fees$':>9}{'net$':>10}"
         f"{'net+reb$':>10}{'days':>6}"
     )
     lines.append(header)
@@ -146,6 +149,7 @@ def render_report(db_path: str | Path) -> str:
         lines.append(
             f"{venue_label:<11}{cell.category:<10}{cell.kind:<12}{cell.policy:<7}"
             f"{cell.n_attempts:>6}{cell.n_captured:>6}{cell.n_leg_risk:>8}"
+            f"{cell.n_missed:>7}"
             f"{cell.fill_rate*100:>6.1f}%{cell.gross_pnl:>10.2f}{cell.fees:>9.2f}"
             f"{cell.net_pnl:>10.2f}{cell.net_plus_rebate:>10.2f}"
             f"{cell.days_covered:>6.0f}"
@@ -154,6 +158,8 @@ def render_report(db_path: str | Path) -> str:
         lines.append("  (no attempts recorded - run `polyarb collect` first)")
     lines.append("")
     lines.append("Notes: taker rows assume perfectly simultaneous fills (optimistic).")
+    lines.append("       taker_disc waits config.taker_disc_latency_s and refills against")
+    lines.append("       the book as it then stands; 'missed' = edge closed in that window.")
     lines.append("       maker 'net+reb$' uses an UPPER-BOUND rebate estimate.")
     return "\n".join(lines)
 

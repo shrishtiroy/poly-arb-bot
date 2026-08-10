@@ -38,6 +38,14 @@ class Config(BaseModel):
     bankroll_per_venue: float = 10_000.0
     maker_order_ttl_s: float = 120.0     # cancel resting legs after this
     maker_price_improve_tick: float = 0.01
+    # TAKER_DISCIPLINED is the "would a real bot actually do this" policy, so
+    # unlike TAKER it does not get to cross the spread at the exact instant
+    # the gap was detected. It waits taker_disc_latency_s (decision time +
+    # order round-trip to the venue) and then fills against whatever the book
+    # looks like at that later moment - which may have moved or vanished. This
+    # is what makes TAKER_DISCIPLINED's numbers a plausible deployable
+    # estimate rather than TAKER's optimistic upper bound.
+    taker_disc_latency_s: float = 0.25
     # Maker is OFF by default: across 1,296 live attempts it completed zero
     # two-leg arbs (1,271 expired unfilled, 25 filled one leg and were
     # liquidated as leg_risk for -$477). It is pure downside on this data, so
