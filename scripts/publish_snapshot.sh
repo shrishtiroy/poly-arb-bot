@@ -39,7 +39,15 @@ fi
 
 git add data/live.sqlite
 git commit -m "Refresh the Vercel snapshot (data through $(date '+%Y-%m-%d'))" >> "$LOG" 2>&1
-if git push >> "$LOG" 2>&1; then
+
+# Vercel deploys production from main, not necessarily the branch this repo
+# happens to be checked out on, so push both. (2026-08-31: pushes only went
+# to the feature branch for three weeks and never reached main, so the site
+# stayed on the 8/10 snapshot even though this script was "succeeding".)
+ok=1
+git push >> "$LOG" 2>&1 || ok=0
+git push origin HEAD:main >> "$LOG" 2>&1 || ok=0
+if [[ $ok == 1 ]]; then
   log "published snapshot"
 else
   log "push failed"
