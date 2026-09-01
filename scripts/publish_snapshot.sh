@@ -1,0 +1,47 @@
+#!/bin/zsh
+# Periodic snapshot publish, driven by launchd.
+#
+# refresh_snapshot.sh alone only regenerates data/live.sqlite locally; the
+# Vercel dashboard only picks up new data once that file is committed and
+# pushed. This wrapper does both legs so the site can never again go stale
+# just because nobody remembered to publish (as happened 2026-08-10 to
+# 2026-08-31: the collector ran the whole time, nobody pushed the snapshot).
+set -u
+
+PROJECT=/Users/shrishtiroy/Documents/projects/poly-arb-bot
+DATA=/Users/shrishtiroy/polyarb-data
+LOG=$DATA/publish.log
+LOCK=$DATA/publish.lock
+
+cd "$PROJECT" || exit 1
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [publish] $1" >> "$LOG"; }
+
+if [[ -f $LOG ]] && [[ $(stat -f%z "$LOG") -gt 52428800 ]]; then
+  mv -f "$LOG" "$LOG.1"
+fi
+
+if ! /usr/bin/shlock -f "$LOCK" -p $$; then
+  log "previous publish still running (pid $(cat "$LOCK" 2>/dev/null)); skipping this run"
+  exit 0
+fi
+trap 'rm -f "$LOCK"' EXIT INT TERM
+
+if ! "$PROJECT/scripts/refresh_snapshot.sh" >> "$LOG" 2>&1; then
+  log "refresh_snapshot.sh failed; not publishing"
+  exit 1
+fi
+
+if git diff --quiet -- data/live.sqlite; then
+  log "snapshot unchanged; nothing to publish"
+  exit 0
+fi
+
+git add data/live.sqlite
+git commit -m "Refresh the Vercel snapshot (data through $(date '+%Y-%m-%d'))" >> "$LOG" 2>&1
+if git push >> "$LOG" 2>&1; then
+  log "published snapshot"
+else
+  log "push failed"
+  exit 1
+fi

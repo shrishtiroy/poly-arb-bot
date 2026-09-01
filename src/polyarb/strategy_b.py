@@ -19,6 +19,7 @@ reads it synchronously (no await, no blocking the event loop).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -134,12 +135,21 @@ class StrategyB:
 
     async def prime(self) -> None:
         """Load the tradable-symbol set and index targets. Call once at startup
-        before the refresh loop (which needs the symbol set to resolve)."""
-        try:
-            self._symbol_set = await self.client.symbols()
-        except Exception as exc:  # noqa: BLE001 - degrade gracefully, no orders anyway
-            log.warning("binance exchangeInfo fetch failed: %s", exc)
-            self._symbol_set = set()
+        before the refresh loop (which needs the symbol set to resolve).
+
+        Retries a few times with backoff: a transient DNS/network blip here
+        used to zero out every target for the whole multi-hour collector run
+        (2026-08-31), since nothing re-attempts this fetch afterwards."""
+        for attempt, delay in enumerate((0, 2, 5, 10)):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                self._symbol_set = await self.client.symbols()
+                break
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully, no orders anyway
+                log.warning("binance exchangeInfo fetch failed (attempt %d): %s",
+                            attempt + 1, exc)
+                self._symbol_set = set()
         self.resolve_targets()
         log.info("strategy B: %d priceable crypto markets across %d symbols",
                  len(self._targets), len(self.symbols_in_use()))
