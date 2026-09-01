@@ -140,6 +140,34 @@ def load(db):
     taker = summarize(gaps)
     ladder = summarize(ladder_gaps)
 
+    # The headline totals must not be bounded by the LIMIT 1000 above (that
+    # limit exists only to cap the page size of the row table/chart). Without
+    # this, "Total P&L" silently became a rolling-most-recent-1000 number
+    # instead of a lifetime total, which is why it swung from ~14,000 to
+    # ~3,000 the moment three weeks of paused publishing caught up at once.
+    for kind, bucket in (("taker", taker), ("ladder", ladder)):
+        cond = "g.kind = 'ladder'" if kind == "ladder" else "g.kind != 'ladder'"
+        row = conn.execute(f"""
+            SELECT
+              COUNT(*) AS total,
+              SUM(traded) AS took,
+              SUM(CASE WHEN traded THEN pnl ELSE 0 END) AS net,
+              SUM(CASE WHEN traded THEN fees ELSE 0 END) AS fees
+            FROM (
+              SELECT
+                (g.net_taker_edge_per_share > 0
+                 AND COALESCE(rd.gap_id, rn.gap_id) IS NOT NULL) AS traded,
+                COALESCE(rd.net_pnl, rn.net_pnl) AS pnl,
+                COALESCE(rd.fees, rn.fees) AS fees
+              FROM gap_events g
+              LEFT JOIN results rd ON rd.gap_id = g.gap_id AND rd.policy = ?
+              LEFT JOIN results rn ON rn.gap_id = g.gap_id AND rn.policy = 'taker'
+              WHERE {cond}
+            )""", (POLICY,)).fetchone()
+        total, took = row["total"] or 0, row["took"] or 0
+        bucket.update(total=total, took=took, skipped=total - took,
+                      net=row["net"] or 0.0, fees=row["fees"] or 0.0)
+
     # Maker attempts, oldest first, for the cumulative maker chart. row_idx links
     # each point back to its gap's row in the main table (None if outside it).
     main_row = {x["gap_id"]: i for i, x in enumerate(gaps)}
