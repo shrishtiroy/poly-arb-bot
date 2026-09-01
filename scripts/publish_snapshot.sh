@@ -6,6 +6,14 @@
 # pushed. This wrapper does both legs so the site can never again go stale
 # just because nobody remembered to publish (as happened 2026-08-10 to
 # 2026-08-31: the collector ran the whole time, nobody pushed the snapshot).
+#
+# Why refresh_snapshot.sh runs from a *staged copy* in $DATA instead of its
+# real location under scripts/: ~/Documents is TCC-protected, and launchd's
+# zsh cannot open() a .sh file there to interpret it (same restriction
+# install_schedule.sh documents for collect_daily.sh) - it silently failed
+# with "can't open input file" on every scheduled run for the first day
+# (2026-09-01), even though a manual run from an interactive shell worked
+# fine and made the bug easy to miss.
 set -u
 
 PROJECT=/Users/shrishtiroy/Documents/projects/poly-arb-bot
@@ -27,7 +35,8 @@ if ! /usr/bin/shlock -f "$LOCK" -p $$; then
 fi
 trap 'rm -f "$LOCK"' EXIT INT TERM
 
-if ! "$PROJECT/scripts/refresh_snapshot.sh" >> "$LOG" 2>&1; then
+install -m 755 "$PROJECT/scripts/refresh_snapshot.sh" "$DATA/refresh_snapshot.sh"
+if ! POLYARB_SNAPSHOT_DEST="$PROJECT/data/live.sqlite" "$DATA/refresh_snapshot.sh" >> "$LOG" 2>&1; then
   log "refresh_snapshot.sh failed; not publishing"
   exit 1
 fi

@@ -14,7 +14,7 @@
 set -eu
 
 LIVE=${POLYARB_LIVE_DB:-/Users/shrishtiroy/polyarb-data/live.sqlite}
-DEST=$(cd "$(dirname "$0")/.." && pwd)/data/live.sqlite
+DEST=${POLYARB_SNAPSHOT_DEST:-$(cd "$(dirname "$0")/.." && pwd)/data/live.sqlite}
 TMP=$(mktemp -t polyarb-snap)
 
 trap 'rm -f "$TMP" "$TMP-wal" "$TMP-shm"' EXIT
