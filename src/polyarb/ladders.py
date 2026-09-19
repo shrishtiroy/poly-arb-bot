@@ -33,7 +33,8 @@ _HIGH_MARK = re.compile(r"\(\s*high\s*\)", re.I)
 # "up" family: probability falls as the strike rises. "down": it rises.
 _UP = re.compile(r"\b(above|reach|hit|over|exceed)\b", re.I)
 _DOWN = re.compile(r"\b(dip|below|under|drop|fall)\b", re.I)
-_STRIKE = re.compile(r"\$\s*([\d,]+(?:\.\d+)?)\s*(k)?", re.I)
+_STRIKE = re.compile(r"\$\s*([\d,]+(?:\.\d+)?)\s*(k|m|b)?", re.I)
+_STRIKE_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
 
 def parse_threshold(question: str) -> tuple[str, float] | None:
@@ -46,8 +47,8 @@ def parse_threshold(question: str) -> tuple[str, float] | None:
     if not money:
         return None
     strike = float(money.group(1).replace(",", ""))
-    if money.group(2):  # a trailing "k", e.g. "$67.5k"
-        strike *= 1000
+    if money.group(2):  # a trailing k/m/b, e.g. "$67.5k" or "$3B"
+        strike *= _STRIKE_MULT[money.group(2).lower()]
     # Explicit direction markers win over ambiguous verbs.
     if _LOW_MARK.search(question):
         return "down", strike

@@ -19,6 +19,8 @@ def test_parse_threshold_families():
     assert parse_threshold("Will Bitcoin dip to $55,000 in July?") == ("down", 55000)
     assert parse_threshold("Will Ethereum be below $1,100 in July?") == ("down", 1100)
     assert parse_threshold("Will BTC hit $2k?") == ("up", 2000)  # trailing k
+    assert parse_threshold("Variational FDV above $500M one day after launch?") == ("up", 500_000_000)
+    assert parse_threshold("Variational FDV above $3B one day after launch?") == ("up", 3_000_000_000)
 
 
 def test_parse_threshold_rejects_non_threshold():
