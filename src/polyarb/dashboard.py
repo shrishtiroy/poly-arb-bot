@@ -111,6 +111,7 @@ def load(db):
             net_c=g["net_taker_edge_per_share"] * 100,
             traded=traded,
             pnl=r["net_pnl"] if traded else None,
+            outcome=r["outcome"] if traded else None,
             fees=r["fees"] if traded else 0.0,
             shares=r["shares"] if traded else g["executable_shares"],
             maker_limits=maker_by_gap.get(g["gap_id"]),
@@ -354,8 +355,10 @@ def gap_table(gaps, omap):
         ts = datetime.datetime.fromtimestamp(g["ts"]).strftime("%m-%d %H:%M:%S")
         if g["traded"]:
             action = '<span class="took">TRADED</span>'
-            pnl = m(g["pnl"])
-            rowcls = ""
+            missed = g["outcome"] == "missed"
+            pnl = (f'<span class="zero">{g["pnl"]:+,.2f}</span>' if missed
+                   else m(g["pnl"]))
+            rowcls = "missedrow" if missed else ""
         else:
             action = '<span class="skip">skipped</span>'
             pnl = '<span class="muted">fees &gt; gap</span>'
@@ -394,8 +397,16 @@ def gap_table(gaps, omap):
             else:
                 linkitems.append(f"<span class='mlink dead'>{q}</span>")
         links = "".join(linkitems)
-        exec_label = ("Taker trade (crossed the spread)" if g["traded"]
-                      else "Not taken (net edge did not clear fees)")
+        if g["traded"] and g["outcome"] == "missed":
+            exec_label = ('<span class="zero">Trade taken but fell through</span> '
+                           "&mdash; the edge closed (or the book moved) during "
+                           "the simulated 0.25s latency window between detection "
+                           "and order placement, so no fill happened and P&amp;L "
+                           "is $0.00.")
+        elif g["traded"]:
+            exec_label = "Taker trade (crossed the spread)"
+        else:
+            exec_label = "Not taken (net edge did not clear fees)"
         maker_line = ""
         if g["maker_limits"]:
             parts = ", ".join(
@@ -858,7 +869,7 @@ PAGE = """<!doctype html><html lang="en"><head>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,900&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root {{ --cream:#f4ecd8; --ink:#141210; --line:#d8ccae; --pos:#1f6b3b; --neg:#a8321f; }}
+  :root {{ --cream:#f4ecd8; --ink:#141210; --line:#d8ccae; --pos:#1f6b3b; --neg:#a8321f; --warn:#a6821a; }}
   * {{ box-sizing:border-box; }}
   body {{ margin:0; background:var(--cream); color:var(--ink);
          font-family:'Space Grotesk',sans-serif; padding:44px 5vw 90px; }}
@@ -928,6 +939,7 @@ PAGE = """<!doctype html><html lang="en"><head>
   .sheet .row {{ cursor:pointer; }}
   .sheet .row:hover {{ background:#f0e7ce; }}
   .sheet .row.skiprow {{ opacity:.55; }}
+  .sheet .row.missedrow {{ background:rgba(166,130,26,.08); }}
   .sheet .row td.q {{ font-weight:500; max-width:340px; overflow:hidden;
                      text-overflow:ellipsis; white-space:nowrap; }}
   .sheet .tm {{ color:#9a8c66; font-variant-numeric:tabular-nums; white-space:nowrap; }}
@@ -965,6 +977,7 @@ PAGE = """<!doctype html><html lang="en"><head>
   .muted {{ color:#9a8c66; }}
   tr:last-child td {{ border-bottom:none; }}
   .pos {{ color:var(--pos); font-weight:600; }} .neg {{ color:var(--neg); font-weight:600; }}
+  .zero {{ color:var(--warn); font-weight:600; }}
   .empty {{ margin-top:40px; font-size:18px; color:#6a5f45; }}
   /* ---- Maker chart ---- */
   h2.mh {{ font-family:'Fraunces',serif; font-weight:600; font-size:24px; margin:48px 0 6px; }}
